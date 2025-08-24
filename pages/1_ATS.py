@@ -1,23 +1,21 @@
-import base64
-import io
 import os
 import streamlit as st
-import google.generativeai as genai
+from groq import Groq
 from dotenv import load_dotenv
-from PIL import Image
-import pdf2image
+import fitz 
 
 load_dotenv()
+
 try:
-    genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+    client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 except Exception as e:
-    st.error(f"Failed to configure Google API: {e}. Ensure your GOOGLE_API_KEY is set in the .env file.")
+    st.error(f"Failed to configure Groq API: {e}. Ensure your GROQ_API_KEY is set in the .env file.")
     st.stop()
 
 PROMPTS = {
     "Fit Summary & Analysis": """
         You are a world-class resume evaluation expert and hiring manager for a top tech company.
-        A candidate's multi-page resume and a job description are provided below.
+        The extracted text from a candidate's resume and a job description are provided below.
         Your task is to conduct a comprehensive analysis and provide the following in clear, professional markdown:
 
         1.  **Overall Fit Summary:** A concise paragraph summarizing the candidate's suitability for the role.
@@ -28,11 +26,11 @@ PROMPTS = {
         4.  **Experience Relevance:** Briefly analyze if the candidate’s work history and projects align with the role's responsibilities.
         5.  **Actionable Improvement Suggestions:** Provide specific, actionable advice on how the candidate can tailor their resume to better match this job (e.g., "Quantify achievement in Project X," "Add keywords like 'RESTful API' to your skills section").
 
-        **If the job description is not provided:** Analyze the resume independently. Provide a summary of the candidate's key strengths and suggest 2-3 specific job titles or roles they are well-suited for.
+        **If the job description is not provided:** Analyze the resume text independently. Provide a summary of the candidate's key strengths and suggest 2-3 specific job titles or roles they are well-suited for.
     """,
     "Percentage Match": """
         You are an advanced Applicant Tracking System (ATS) simulator.
-        Given the candidate's resume and a job description, your task is to calculate a precise match percentage.
+        Given the candidate's resume text and a job description, your task is to calculate a precise match percentage.
         Provide only the following:
         1.  **Match Percentage (0–100%):** Based on a deep analysis of keyword overlap, required skills, years of experience, and educational qualifications.
         2.  **Rationale:** In 3-4 bullet points, explain the key factors that influenced the score (both positive and negative).
@@ -41,7 +39,7 @@ PROMPTS = {
     """,
     "Resume Parser": """
         You are a highly accurate, machine-learning-powered resume parser.
-        Your task is to extract structured information from the provided resume pages. Present the output in clean, well-organized markdown format.
+        Your task is to extract structured information from the provided resume text. Present the output in clean, well-organized markdown format.
         Extract the following sections if present:
         -   **Contact Information:** (Name, Email, Phone, LinkedIn, GitHub)
         -   **Professional Summary/Objective**
@@ -53,9 +51,8 @@ PROMPTS = {
     """,
     "Red Flags Checker": """
         You are an expert resume auditor for a top recruitment agency.
-        Scrutinize the provided resume pages for any potential red flags or issues that might cause a recruiter to discard it.
+        Scrutinize the provided resume text for any potential red flags or issues that might cause a recruiter to discard it.
         Check for and list any of the following problems:
-        -   **ATS Formatting Issues:** (e.g., use of columns, tables, images, headers/footers, non-standard fonts that can confuse parsers).
         -   **Vague or Overused Language:** (e.g., "team player," "results-oriented" without concrete evidence).
         -   **Missing Quantifiable Results:** (e.g., lack of numbers, percentages, or specific outcomes in project/work descriptions).
         -   **Spelling and Grammatical Errors.**
@@ -64,58 +61,51 @@ PROMPTS = {
     """
 }
 
-
-def get_gemini_response(prompt, pdf_parts, job_description=""):
+def get_groq_response(system_prompt, user_content):
     try:
-        model = genai.GenerativeModel('gemini-2.5-pro')
-        
-        content_to_send = [prompt]
-        if job_description:
-            content_to_send.append(job_description)
-        
-        content_to_send.extend(pdf_parts)
-        
-        response = model.generate_content(content_to_send)
-        return response.text
+        chat_completion = client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+            model="llama3-70b-8192",
+        )
+        return chat_completion.choices[0].message.content
     except Exception as e:
-        return f"An error occurred while calling the Gemini API: {e}"
+        return f"An error occurred while calling the Groq API: {e}"
 
 def process_and_store_pdf(uploaded_file):
     if uploaded_file is None:
-        st.session_state.pdf_content = None
+        st.session_state.pdf_text_content = None
         return
 
     try:
         if 'processed_file_name' not in st.session_state or st.session_state.processed_file_name != uploaded_file.name:
-            with st.spinner("Processing PDF... This may take a moment for multi-page documents."):
-                images = pdf2image.convert_from_bytes(uploaded_file.read())
+            with st.spinner("Extracting text from PDF..."):
+                pdf_bytes = uploaded_file.read()
+                # Open the PDF from bytes
+                pdf_document = fitz.open(stream=pdf_bytes, filetype="pdf")
                 
-                pdf_parts = []
-                for image in images:
-                    img_byte_arr = io.BytesIO()
-                    image.save(img_byte_arr, format='JPEG')
-                    img_byte_arr = img_byte_arr.getvalue()
-
-                    pdf_parts.append({
-                        "mime_type": "image/jpeg",
-                        "data": base64.b64encode(img_byte_arr).decode()
-                    })
+                # Extract text from all pages
+                full_text = ""
+                for page_num in range(len(pdf_document)):
+                    page = pdf_document.load_page(page_num)
+                    full_text += page.get_text()
                 
-                st.session_state.pdf_content = pdf_parts
+                st.session_state.pdf_text_content = full_text
                 st.session_state.processed_file_name = uploaded_file.name
-                st.success(f"Successfully processed {len(images)}-page resume: '{uploaded_file.name}'")
+                st.success(f"Successfully processed resume: '{uploaded_file.name}'")
 
     except Exception as e:
         st.error(f"Error processing PDF: {e}")
-        st.session_state.pdf_content = None
-
+        st.session_state.pdf_text_content = None
 
 st.set_page_config(page_title="ATS Resume Expert", layout="wide", initial_sidebar_state="auto")
-st.title(" ATS Resume Analyzer")
+st.title("ATS Resume Analyzer")
 st.markdown("Get instant, AI-powered feedback on your resume.")
 
-if 'pdf_content' not in st.session_state:
-    st.session_state.pdf_content = None
+if 'pdf_text_content' not in st.session_state:
+    st.session_state.pdf_text_content = None
 if 'processed_file_name' not in st.session_state:
     st.session_state.processed_file_name = None
 
@@ -150,10 +140,16 @@ analysis_type = st.radio(
 )
 
 if st.button("Analyze Resume", type="primary", use_container_width=True):
-    if st.session_state.pdf_content:
-        with st.spinner(f" Running '{analysis_type}' analysis..."):
-            prompt_to_use = PROMPTS[analysis_type]   
-            response = get_gemini_response(prompt_to_use, st.session_state.pdf_content, job_description)
+    if st.session_state.pdf_text_content:
+        with st.spinner(f"Running '{analysis_type}' analysis..."):
+            system_prompt = PROMPTS[analysis_type]
+            
+            # Combine resume text and job description for the user content
+            user_content = f"RESUME TEXT:\n{st.session_state.pdf_text_content}\n\n"
+            if job_description:
+                user_content += f"JOB DESCRIPTION:\n{job_description}"
+                
+            response = get_groq_response(system_prompt, user_content)
             st.markdown(f"--- \n ### Results for: {analysis_type}")
             st.markdown(response)
     else:

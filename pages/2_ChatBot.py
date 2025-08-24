@@ -1,33 +1,41 @@
 import streamlit as st
-import google.generativeai as genai 
+from groq import Groq
 import os
 
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-
-model = genai.GenerativeModel('gemini-2.5-pro')
-
+try:
+    client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+except Exception as e:
+    st.error("Please ensure your GROQ_API_KEY is set in the .env file.")
+    st.stop()
+    
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
 st.set_page_config(page_title="Conversational AI Chatbot")
 st.title("AI Conversational Chatbot")
+st.markdown("Powered by Groq and Llama 3")
 
-user_input = st.text_input("You:", key="user_input")
+for message in st.session_state.chat_history:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
 
-if st.button("Send") and user_input:
+user_input = st.chat_input("What's on your mind?")
+if user_input:
+    st.session_state.chat_history.append({"role": "user", "content": user_input})
+    with st.chat_message("user"):
+        st.markdown(user_input)
+
     with st.spinner("Thinking..."):
-        st.session_state.chat_history.append({"role": "user", "text": user_input})
-        gemini_messages = [
-            {"role": msg["role"], "parts": [msg["text"]]} for msg in st.session_state.chat_history
-        ]
-        response = model.generate_content(gemini_messages)
-        bot_reply = response.text
-        st.session_state.chat_history.append({"role": "model", "text": bot_reply})
+        try:
+            chat_completion = client.chat.completions.create(
+                messages=st.session_state.chat_history,
+                model="llama3-70b-8192",
+            )
+            bot_reply = chat_completion.choices[0].message.content
+            
+            st.session_state.chat_history.append({"role": "assistant", "content": bot_reply})
+            with st.chat_message("assistant"):
+                st.markdown(bot_reply)
 
-st.markdown("### Conversation")
-for msg in st.session_state.chat_history:
-    if msg["role"] == "user":
-        st.markdown(f"**You:** {msg['text']}")
-    else:
-        st.markdown(f"**Bot:** {msg['text']}")
-
+        except Exception as e:
+            st.error(f"An error occurred: {e}")
